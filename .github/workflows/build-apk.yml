@@ -2,10 +2,26 @@ name: Build ESoft Admin APK
 
 on:
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Override versionName for this build (optional, e.g. 1.1)'
+        required: false
+        default: ''
   push:
     branches:
       - main
       - master
+    paths-ignore:
+      - '**.md'
+      - 'README.txt'
+  pull_request:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -25,7 +41,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         run: |
           sdkmanager "platform-tools" \
             "platforms;android-35" \
@@ -35,6 +51,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+          cache-read-only: false
 
       - name: Verify ESoft Admin project
         run: |
@@ -44,12 +61,37 @@ jobs:
           test -f app/google-services.json
           echo "ESoft Admin Android project verified."
 
+      - name: Apply version override
+        if: ${{ github.event.inputs.version_name != '' }}
+        run: |
+          sed -i "s/versionName '.*'/versionName '${{ github.event.inputs.version_name }}'/" app/build.gradle
+          echo "versionName overridden to ${{ github.event.inputs.version_name }}"
+
+      - name: Lint (non-blocking)
+        run: gradle lintDebug || echo "Lint reported issues — continuing build."
+        continue-on-error: true
+
       - name: Build ESoft Admin debug APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug --stacktrace
+
+      - name: Set artifact metadata
+        id: meta
+        run: |
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Upload ESoft Admin APK
         uses: actions/upload-artifact@v4
         with:
-          name: ESoft-Admin-debug-apk
+          name: ESoft-Admin-debug-${{ steps.meta.outputs.short_sha }}-run${{ github.run_number }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ESoft-Admin-lint-report-run${{ github.run_number }}
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+          retention-days: 14
